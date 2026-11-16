@@ -72,3 +72,35 @@ dialog::backdrop { background: #30213e80; }
   .cards { gap: 10px; }
   .card .primary { font-size: .86rem; padding-inline: 11px; }
 }
+
+.workflow { max-width: 660px; padding-block: 12px 48px; }
+.workflow h1 { font-size: clamp(1.8rem, 6vw, 2.6rem); }
+.workflow h2 { margin-top: 24px; }
+.sheet {
+  margin: 16px 0; padding: 20px; border-radius: 20px;
+  background: #fff; border: 1px solid #ede3ee;
+}
+.sheet p { margin: 0 0 12px; }
+.sheet label { display: block; margin-bottom: 12px; }
+.sheet input:not([type="radio"]):not([type="checkbox"]) {
+  display: block; width: 100%; font: inherit; color: inherit; margin-top: 5px;
+  padding: 8px 10px; border-radius: 10px; border: 1px solid #b394c7;
+}
+.sheet fieldset { border: 0; padding: 0; margin: 0 0 16px; }
+.sheet legend { font-weight: 700; margin-bottom: 8px; }
+.sheet .quiz-option { margin: 0; padding: 5px 0; cursor: pointer; }
+.code-list { padding: 0; list-style: none; }
+.code-list code { overflow-wrap: anywhere; font-size: 1.05em; }
+.code-list strong { display: block; margin-bottom: 8px; }
+.form-hint, .rank-choice { font-size: .9rem; }
+.sheet .rank-choice { display: flex; align-items: start; gap: 8px; cursor: pointer; }
+.rank-choice input { margin-top: .35em; accent-color: var(--purple); }
+.workflow .sheet h2 { margin-top: 0; }
+.board-list { list-style: none; padding: 0; margin: 0; }
+.board-row {
+  display: grid; grid-template-columns: 2ch minmax(0, 1fr) auto;
+  padding: 8px 0; gap: 12px; align-items: center; border-top: 1px solid #ede3ee;
+}
+.board-row strong { overflow-wrap: anywhere; }
+.board-row div > small { display: block; }
+.board-you { padding: 2px 6px; background: var(--lavender); border-radius: 999px; }
