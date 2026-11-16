@@ -134,9 +134,9 @@ function selectFilter(category) {
 }
 
 for (const filter of filters) filter.addEventListener("click", () => selectFilter(filter.dataset.filter));
-document.querySelector(".hero a").addEventListener("click", () => selectFilter("all"));
-document.querySelector("#start").addEventListener("click", start);
-document.querySelector("#history").addEventListener("click", () => {
+document.querySelector(".hero a")?.addEventListener("click", () => selectFilter("all"));
+document.querySelector("#start")?.addEventListener("click", start);
+document.querySelector("#history")?.addEventListener("click", () => {
   heading("我的试玩记录");
   const records = readHistory();
   if (!records.length) paragraph("完成一次测试后，结果会出现在这里。");
