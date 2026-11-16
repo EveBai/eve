@@ -42,11 +42,11 @@ h2 { font-size: 1.65rem; margin: 0 0 12px; }
 .filters button[aria-pressed="true"] { color: white; background: var(--purple); }
 .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .card { overflow: hidden; border-radius: 20px; background: #fff; border: 1px solid #ede3ee; }
-.thumb { aspect-ratio: 2; background-size: 325% auto; }
-.role-art { background-position: 4% 70%; }
-.silly-art { background-position: 50% 70%; }
-.challenge-art { background-position: 97% 70%; }
-.relation-art { background-position: 50% 92.4%; }
+.thumb { aspect-ratio: 2.7; background-size: 325% auto; }
+.role-art { background-position: 4% 71%; }
+.silly-art { background-position: 50% 71%; }
+.challenge-art { background-position: 97% 71%; }
+.relation-art { background-position: 50% 92.6%; }
 .card-copy { padding: 14px 16px 18px; }
 h3 { margin: 0; font-size: 1.05rem; }
 .card-copy p { font-size: .92rem; margin: 6px 0 12px; }
@@ -121,7 +121,7 @@ dialog::backdrop { background: #30213e80; }
   margin: 0 0 12px; color: #593678; font-weight: 700; font-size: .9rem;
 }
 .topic-art {
-  width: calc(100% - 32px); aspect-ratio: 2;
+  width: calc(100% - 32px); aspect-ratio: 2.7;
   margin: 16px 16px 16px 0; border-radius: 22px;
   background-size: 325% auto;
 }
