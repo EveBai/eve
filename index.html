@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#fff9f3">
+  <title>开心测试局</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="quiz.js"></script>
+</head>
+<body>
+  <header class="wrap nav">
+    <a class="brand" href="./"><span class="art logo" aria-hidden="true"></span>开心测试局</a>
+    <nav aria-label="主导航">
+      <a href="#discover">发现测试</a>
+      <button type="button" id="history">我的记录</button>
+    </nav>
+  </header>
+  <main class="wrap">
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>今天，来测点<br>没用但开心的。</h1>
+        <p>一个人放松，和朋友一起开心。</p>
+        <a class="primary" href="#friend-role">找个测试玩</a>
+      </div>
+      <div class="art hero-art" role="img" aria-label="毛绒小猫、小狗和小兔子靠在软垫上"></div>
+    </section>
+    <section id="discover" aria-labelledby="discover-title">
+      <h2 id="discover-title">发现测试</h2>
+      <div class="filters" aria-label="测试分类">
+        <button type="button" data-filter="all" aria-pressed="true">全部</button>
+        <button type="button" data-filter="personality" aria-pressed="false">性格探索</button>
+        <button type="button" data-filter="relationship" aria-pressed="false">关系互动</button>
+        <button type="button" data-filter="challenge" aria-pressed="false">能力挑战</button>
+        <button type="button" data-filter="silly" aria-pressed="false">无厘头</button>
+      </div>
+      <div class="cards">
+        <article class="card" id="friend-role" data-category="personality">
+          <div class="art thumb role-art" aria-hidden="true"></div>
+          <div class="card-copy">
+            <h3>你在朋友局里的隐藏角色</h3>
+            <p>朋友聚在一起时，你会悄悄承担什么角色？</p>
+            <button type="button" class="primary" id="start">免费开始 · 约 2 分钟</button>
+          </div>
+        </article>
+        <article class="card" data-category="silly">
+          <div class="art thumb silly-art" aria-hidden="true"></div>
+          <div class="card-copy"><h3>你的灵魂是哪种家电</h3><p>是热情的烤面包机，还是淡定的小风扇？</p><small>筹备中</small></div>
+        </article>
+        <article class="card" data-category="challenge">
+          <div class="art thumb challenge-art" aria-hidden="true"></div>
+          <div class="card-copy"><h3>三分钟观察力挑战</h3><p>跟小狗侦探一起找出画面里的变化。</p><small>筹备中</small></div>
+        </article>
+        <article class="card" data-category="relationship">
+          <div class="art thumb relation-art" aria-hidden="true"></div>
+          <div class="card-copy"><h3>你们的聊天默契</h3><p>看看你和朋友对哪些小事最有默契。</p><small>筹备中</small></div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <footer class="wrap">开心测试局 · 娱乐测试</footer>
+  <dialog id="panel" aria-labelledby="panel-title">
+    <form method="dialog"><button class="close" aria-label="关闭">×</button></form>
+    <div id="panel-content"></div>
+  </dialog>
+</body>
+</html>
