@@ -216,6 +216,35 @@ def test_leaderboard(db, test_id):
     """, (test_id,)).fetchall()
 
 
+def result_distribution(db, test_id):
+    rows = db.execute("""
+        WITH completions AS (
+            SELECT a.result_index, ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(p.browser_token, a.token)
+                ORDER BY a.completed_at DESC, a.rowid DESC
+            ) AS latest
+            FROM attempts a JOIN codes c ON c.code = a.code
+            LEFT JOIN participants p ON p.id = a.participant_id
+            WHERE COALESCE(a.chosen_test, c.test_id) = ? AND a.completed_at IS NOT NULL
+        )
+        SELECT result_index, COUNT(*) AS total FROM completions WHERE latest = 1 GROUP BY result_index
+    """, (test_id,)).fetchall()
+    counts = dict.fromkeys(range(len(TESTS[test_id].results)), 0)
+    for row in rows:
+        if row["result_index"] in counts:
+            counts[row["result_index"]] = row["total"]
+    return counts
+
+
+def percent(count, total):
+    value = count * 100 / total
+    if count and value < 0.1:
+        return "<0.1%"
+    if count < total and value > 99.9:
+        return ">99.9%"
+    return f"{value:.1f}".removesuffix(".0") + "%"
+
+
 class QuizServer(ThreadingHTTPServer):
     def __init__(self, address, handler):
         self.workers = BoundedSemaphore(32)
@@ -342,22 +371,21 @@ class Handler(BaseHTTPRequestHandler):
     def appliance_topic(self):
         html = (ROOT / "appliance.html").read_text().replace("<head>", '<head><base href="/">', 1)
         visitor = self.visitor_token()
-        if visitor:
-            with closing(connect()) as db:
+        with closing(connect()) as db:
+            participant = None
+            if visitor:
                 participant = db.execute("""
-                    SELECT p.id AS participant_id, p.code, p.show_on_board, COALESCE(a.chosen_test, c.test_id) AS test_id, a.chosen_test
+                    SELECT COALESCE(a.chosen_test, c.test_id) AS test_id, a.result_index
                     FROM participants p JOIN codes c ON c.code = p.code
                     JOIN attempts a ON a.participant_id = p.id
                     WHERE p.browser_token = ? AND a.completed_at IS NOT NULL
                       AND COALESCE(a.chosen_test, c.test_id) IN (?, ?)
                     ORDER BY a.completed_at DESC, a.rowid DESC LIMIT 1
                 """, (visitor, TEST_ID, FULL_TEST_ID)).fetchone()
-                test = TESTS.get(participant["test_id"]) if participant else None
-                if test:
-                    site = participant["chosen_test"] is not None
-                    entries = test_leaderboard(db, participant["test_id"]) if site else leaderboard(db, participant["code"])
-                    board = self.render_board(entries, participant, test, caption="最近参加的测试 · ", site=site)
-                    html = re.sub(r"<aside class=\"topic-box topic-board\".*?</aside>", lambda _: board, html, count=1, flags=re.S)
+            test_id = participant["test_id"] if participant else FULL_TEST_ID
+            counts = result_distribution(db, test_id)
+        graph = self.render_distribution(TESTS[test_id], counts, participant["result_index"] if participant else None)
+        html = re.sub(r"<aside class=\"topic-box topic-board\".*?</aside>", lambda _: graph, html, count=1, flags=re.S)
         self.respond(html.encode())
 
     def do_POST(self):
@@ -636,23 +664,60 @@ class Handler(BaseHTTPRequestHandler):
             entries = []
             if error is None:
                 entries = test_leaderboard(db, row["test_id"]) if site else leaderboard(db, row["code"])
+                distribution = result_distribution(db, row["test_id"])
         if error:
             return self.code_page(error[1], error[0])
         title, description = test.results[result]
         board = self.render_board(entries, row, test, site=site)
+        graph = self.render_distribution(test, distribution, result)
         heading = f"你是{title}" if test is TESTS[FRIEND_TEST_ID] else f"你像一台{title}"
         topic = "/friend-role.html" if test is TESTS[FRIEND_TEST_ID] else "/code/topic"
         share = f'<form method="post" action="/code/share"><input type="hidden" name="attempt" value="{escape(token)}"><button class="primary">生成分享页</button></form>' if row["participant_id"] else ""
         notice = "这次测试已完成，一次性测试码已用完。" if site else ""
-        card = self.result_card(test, result, description, share, topic, notice)
-        self.page(heading, f'<div class="topic-grid result-grid">{card}{board}</div>', wide=True)
+        card = self.result_card(test, result, description, share, topic, notice, self.rarity(distribution, result))
+        participants = f'<details class="participant-details"><summary>查看参与者榜单</summary>{board}</details>'
+        self.page(heading, f'<div class="topic-grid result-grid">{card}<div>{graph}{participants}</div></div>', wide=True)
 
-    def result_card(self, test, result, description, action, topic, notice=""):
+    def result_card(self, test, result, description, action, topic, notice="", rarity=""):
         illustration = self.result_image(test, result)
         note = f'<p class="result-note">{escape(notice)}</p>' if notice else ""
         return f"""<section class="result-card">{illustration}<div class="result-copy">
-<h2>{escape(test.title)}</h2><p class="result-description">{escape(description)}</p>{note}
+<h2>{escape(test.title)}</h2>{rarity}<p class="result-description">{escape(description)}</p>{note}
 <div class="topic-actions">{action}<a class="text-link" href="{topic}">返回测试专题</a></div></div></section>"""
+
+    def rarity(self, counts, result):
+        total = sum(counts.values())
+        if not total:
+            return ""
+        share = escape(percent(counts[result], total))
+        return f'<p class="rarity"><strong>{share}</strong><span>的已测访客和你结果相同<small>{counts[result]} / {total} 份结果</small></span></p>'
+
+    def render_distribution(self, test, counts, result):
+        total = sum(counts.values())
+        if not total:
+            return '<section class="topic-box topic-board"><h2>结果分布</h2><p>有交卷记录后就会显示占比。</p></section>'
+        ordered = sorted(counts, key=lambda key: -counts[key])
+        items = []
+        previous_count = None
+        rank = 0
+        for position, index in enumerate(ordered, 1):
+            count = counts[index]
+            if count != previous_count:
+                rank = position
+                previous_count = count
+            name = escape(test.results[index][0])
+            label = f"第 {rank} 名" if count else "暂无"
+            highlight = ' class="is-yours"' if index == result else ""
+            yours = ' <small class="board-you">你的结果</small>' if index == result else ""
+            items.append(f'''<li{highlight}>
+<div class="distribution-label">{self.result_image(test, index, icon=True)}<div><small>{label}</small><strong>{name}{yours}</strong></div>
+<div class="distribution-value"><strong>{escape(percent(count, total))}</strong><small>{count} 份</small></div></div>
+<meter min="0" max="{total}" value="{count}" aria-label="{name}的占比"></meter></li>''')
+        note = "样本较少，占比会随新结果变化。" if total < 20 else ""
+        version = "完整版" if test is TESTS[FULL_TEST_ID] else "速测版" if test is TESTS[TEST_ID] else "朋友局"
+        return f'''<section class="topic-box topic-board distribution" aria-labelledby="distribution-title">
+<h2 id="distribution-title">结果分布</h2><p>{version} · {total} 份结果 · 每个浏览器取最近一次。{note}</p>
+<ol>{''.join(items)}</ol></section>'''
 
     def result_image(self, test, result, icon=False):
         style = "role-art result-role" if test is TESTS[FRIEND_TEST_ID] else f"appliance-picture appliance-{result}"
