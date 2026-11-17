@@ -206,3 +206,23 @@ dialog::backdrop { background: #30213e80; }
 .distribution .is-yours meter::-moz-meter-bar { background: var(--purple); }
 .participant-details { margin-top: 14px; }
 .participant-details > summary { cursor: pointer; padding: 10px 4px; color: var(--purple); }
+
+.bank-art {
+  background-image: url("/question-bank-art.jpg");
+  background-repeat: no-repeat;
+  background-size: 200% auto;
+}
+.art-life-bug { --cover-x: 0%; --cover-y: 0%; --cover-card-y: 13%; --symbol-bg: #ffe5d5; }
+.art-brain-background { --cover-x: 100%; --cover-y: 0%; --cover-card-y: 13%; --symbol-bg: #ede4ff; }
+.art-useless-superpower { --cover-x: 0%; --cover-y: 100%; --cover-card-y: 76%; --symbol-bg: #e3f5fc; }
+.bank-art { background-position: var(--cover-x) var(--cover-y); }
+.thumb.bank-art { background-position: var(--cover-x) var(--cover-card-y); }
+.bank-hero { margin-top: 18px; }
+.bank-hero .result-image { width: calc(100% - 24px); margin: 12px; border-radius: 20px; }
+.bank-hero h2 { color: #4f3071; line-height: 1.24; }
+.bank-hero .hero-copy { padding: clamp(20px, 4vw, 45px); }
+.bank-symbol { display: grid; place-items: center; background: var(--symbol-bg); }
+.report-details { margin-top: 20px; padding-top: 6px; border-top: 1px solid #ede3ee; }
+.report-details div { margin: 14px 0; }
+.report-details dt { color: #5a3a79; font-weight: 700; }
+.report-details dd { margin: 3px 0 0; }

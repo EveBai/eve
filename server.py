@@ -1,4 +1,5 @@
-"""Local preview of the test-code workflow. Run with python3 server.py."""
+"""Serve the free quizzes and their shareable results."""
+import json
 import os
 import re
 import secrets
@@ -79,11 +80,51 @@ TESTS = {
     FRIEND_TEST_ID: Test("你在朋友局里的隐藏角色", "5 题 · 约 2 分钟", FRIEND_QUESTIONS, FRIEND_RESULTS),
     FULL_TEST_ID: Test(f"{TEST_NAME} · 完整版", "12 题 · 约 5 分钟", FULL_QUESTIONS, FULL_RESULTS),
 }
+BANKS = json.loads((ROOT / "question-banks.json").read_text(encoding="utf-8"))
+BANK_SYMBOLS = {
+    "life-bug": ("🔑", "⏳", "🚶", "☔", "🔌", "🧦", "🔋", "📦", "📶", "🍀", "🧭", "⏰"),
+    "brain-background": ("🪟", "💡", "📼", "📋", "💬", "🗑️", "🎧", "🪐", "📡", "🔋", "🧩", "🌙"),
+    "useless-superpower": ("🧋", "☀️", "🛗", "🐢", "📺", "🦅", "🪴", "💤", "🏷️", "📶", "👀", "🖨️"),
+}
+for slug, bank in BANKS.items():
+    TESTS[slug] = Test(
+        bank["title"], f'{len(bank["questions"])} 题 · {bank["duration"]}',
+        tuple(bank["questions"]),
+        tuple((entry["title"], entry["description"]) for entry in bank["results"]),
+    )
+
+
+def topic_path(test_id):
+    if test_id in BANKS:
+        return f"/quizzes/{test_id}"
+    if test_id == FRIEND_TEST_ID:
+        return "/friend-role.html"
+    return "/code/topic"
+
+
+def score_result(test_id, answers):
+    if test_id in BANKS:
+        mapping = BANKS[test_id]["scores"]
+        choices = [mapping[index][answer] for index, answer in enumerate(answers)]
+        return Counter(reversed(choices)).most_common(1)[0][0]
+    ordered = reversed(answers) if test_id == FULL_TEST_ID else answers
+    return Counter(ordered).most_common(1)[0][0]
+
+
+def result_heading(test_id, result, shared=False):
+    name = TESTS[test_id].results[result][0]
+    subject = "我" if shared else "你"
+    if test_id in BANKS or test_id == FRIEND_TEST_ID:
+        return f"{subject}的结果 · {name}" if test_id in BANKS else f"{subject}是{name}"
+    return f"{subject}像一台{name}"
+
+
 ASSETS = {
     "/style.css": "text/css; charset=utf-8",
     "/quiz.js": "text/javascript; charset=utf-8",
     "/homepage-plush-concept.png": "image/png",
     "/appliance-results.jpg": "image/jpeg",
+    "/question-bank-art.jpg": "image/jpeg",
     "/share.js": "text/javascript; charset=utf-8",
     **dict.fromkeys(("/observation.html", "/chat-match.html"), "text/html; charset=utf-8"),
 }
@@ -246,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
             home = (ROOT / "index.html").read_text().replace(
                 '<button type="button" id="history">我的记录</button>',
                 '<a href="/code/history">我的记录</a>',
-            )
+            ).replace("<!-- question-bank-cards -->", self.bank_cards())
             self.respond(home.encode())
         elif path == "/friend-role.html":
             html = (ROOT / "friend-role.html").read_text().replace(
@@ -258,6 +299,8 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect("/code/topic")
         elif path == "/code/topic":
             self.appliance_topic()
+        elif path.startswith("/quizzes/") and path.removeprefix("/quizzes/") in BANKS:
+            self.bank_topic(path.removeprefix("/quizzes/"))
         elif path == "/code/history":
             self.history_page()
         elif path in ASSETS:
@@ -270,6 +313,13 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(b"ok\n", content_type="text/plain; charset=utf-8")
         else:
             self.page("找不到页面", '<p><a href="/">返回首页</a></p>', HTTPStatus.NOT_FOUND)
+
+    def bank_cards(self):
+        return "".join(f'''<article class="card" data-category="{escape(bank["category"])}">
+<div class="thumb bank-art art-{slug}" aria-hidden="true"></div>
+<div class="card-copy"><h3>{escape(bank["title"])}</h3><p>{escape(bank["tagline"])}</p>
+<small>免费 · 15 题</small><a class="primary" href="{topic_path(slug)}">进入测试</a></div></article>'''
+                       for slug, bank in BANKS.items())
 
     def history_page(self):
         with closing(connect()) as db:
@@ -285,6 +335,22 @@ class Handler(BaseHTTPRequestHandler):
                 items.append(f'<li class="topic-box"><strong>{escape(title)}</strong><p>{escape(test.title)}</p></li>')
         listing = f'<ul class="code-list">{"".join(items)}</ul>' if items else '<p>完成测试后，这里会显示当前浏览器的结果。</p>'
         self.page("我的测试记录", f'{listing}<p><a class="primary" href="/#discover">看看更多测试</a></p>')
+
+    def bank_topic(self, test_id):
+        bank = BANKS[test_id]
+        test = TESTS[test_id]
+        with closing(connect()) as db:
+            counts = result_distribution(db, test_id)
+        graph = self.render_distribution(test_id, counts, None)
+        artwork = self.result_image(test_id, 0)
+        start = self.start_button(test_id, "开始免费测试")
+        self.page(test.title, f'''<section class="hero topic-hero bank-hero">
+<div class="hero-copy"><p class="topic-meta">{test.duration} · 12 种结果</p>
+<h2>{escape(bank["tagline"])}</h2><p>{escape(bank["intro"])}</p>{start}</div>{artwork}</section>
+<div class="topic-grid"><section class="topic-box"><h2>怎么玩</h2>
+<p>凭第一反应作答，交卷后可以查看完整报告和实测结果分布，也可以生成分享页。</p>
+<p>内容仅供娱乐。</p></section>{graph}</div>''', wide=True,
+                  preview=(bank["intro"], "/question-bank-art.jpg"))
 
     def appliance_topic(self):
         html = (ROOT / "appliance.html").read_text().replace("<head>", '<head><base href="/">', 1)
@@ -302,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
                 """, (visitor, TEST_ID, FULL_TEST_ID)).fetchone()
             test_id = participant["test_id"] if participant else FULL_TEST_ID
             counts = result_distribution(db, test_id)
-        graph = self.render_distribution(TESTS[test_id], counts, participant["result_index"] if participant else None)
+        graph = self.render_distribution(test_id, counts, participant["result_index"] if participant else None)
         html = re.sub(r"<aside class=\"topic-box topic-board\".*?</aside>", lambda _: graph, html, count=1, flags=re.S)
         self.respond(html.encode())
 
@@ -396,25 +462,30 @@ class Handler(BaseHTTPRequestHandler):
                             for picks, (_, options) in zip(answers, test.questions))
                 if not valid:
                     return self.page("请完成所有题目后再提交", '<p>返回上一页即可继续答题。</p>', HTTPStatus.BAD_REQUEST)
-                ordered = reversed(answers) if row["test_id"] == FULL_TEST_ID else answers
-                result = Counter(int(picks[0]) for picks in ordered).most_common(1)[0][0]
+                result = score_result(row["test_id"], [int(picks[0]) for picks in answers])
                 db.execute("UPDATE attempts SET completed_at = ?, result_index = ? WHERE token = ?",
                            (time.time_ns(), result, token))
             distribution = result_distribution(db, row["test_id"])
-        _, description = test.results[result]
-        title = test.results[result][0]
-        heading = f"你是{title}" if test is TESTS[FRIEND_TEST_ID] else f"你像一台{title}"
-        topic = "/friend-role.html" if test is TESTS[FRIEND_TEST_ID] else "/code/topic"
+        test_id = row["test_id"]
+        heading = result_heading(test_id, result)
         share = f'<form method="post" action="/code/share"><input type="hidden" name="attempt" value="{escape(token)}"><button class="primary">生成分享页</button></form>'
-        card = self.result_card(test, result, description, share, topic, self.rarity(distribution, result))
-        graph = self.render_distribution(test, distribution, result)
+        card = self.result_card(test_id, result, share, self.rarity(distribution, result))
+        graph = self.render_distribution(test_id, distribution, result)
         self.page(heading, f'<div class="topic-grid result-grid">{card}<div>{graph}</div></div>', wide=True)
 
-    def result_card(self, test, result, description, action, topic, rarity=""):
-        illustration = self.result_image(test, result)
+    def result_card(self, test_id, result, action, rarity=""):
+        test = TESTS[test_id]
+        _, description = test.results[result]
+        illustration = self.result_image(test_id, result)
+        report = ""
+        if test_id in BANKS:
+            entry = BANKS[test_id]["results"][result]
+            details = "".join(f"<div><dt>{escape(label)}</dt><dd>{escape(value)}</dd></div>"
+                              for label, value in entry["details"])
+            report = f'<dl class="report-details">{details}</dl><p class="result-note">题库设定的趣味稀有度 {entry["rarity"]}%</p>'
         return f"""<section class="result-card">{illustration}<div class="result-copy">
-<h2>{escape(test.title)}</h2>{rarity}<p class="result-description">{escape(description)}</p>
-<div class="topic-actions">{action}<a class="text-link" href="{topic}">返回测试专题</a></div></div></section>"""
+<h2>{escape(test.title)}</h2>{rarity}<p class="result-description">{escape(description)}</p>{report}
+<div class="topic-actions">{action}<a class="text-link" href="{topic_path(test_id)}">返回测试专题</a></div></div></section>"""
 
     def rarity(self, counts, result):
         total = sum(counts.values())
@@ -423,7 +494,8 @@ class Handler(BaseHTTPRequestHandler):
         share = escape(percent(counts[result], total))
         return f'<p class="rarity"><strong>{share}</strong><span>的已测访客和你结果相同<small>{counts[result]} / {total} 份结果</small></span></p>'
 
-    def render_distribution(self, test, counts, result):
+    def render_distribution(self, test_id, counts, result):
+        test = TESTS[test_id]
         total = sum(counts.values())
         if not total:
             return '<section class="topic-box topic-board"><h2>结果分布</h2><p>有交卷记录后就会显示占比。</p></section>'
@@ -441,17 +513,22 @@ class Handler(BaseHTTPRequestHandler):
             highlight = ' class="is-yours"' if index == result else ""
             yours = ' <small class="board-you">你的结果</small>' if index == result else ""
             items.append(f'''<li{highlight}>
-<div class="distribution-label">{self.result_image(test, index, icon=True)}<div><small>{label}</small><strong>{name}{yours}</strong></div>
+<div class="distribution-label">{self.result_image(test_id, index, icon=True)}<div><small>{label}</small><strong>{name}{yours}</strong></div>
 <div class="distribution-value"><strong>{escape(percent(count, total))}</strong><small>{count} 份</small></div></div>
 <meter min="0" max="{total}" value="{count}" aria-label="{name}的占比"></meter></li>''')
         note = "样本较少，占比会随新结果变化。" if total < 20 else ""
-        version = "完整版" if test is TESTS[FULL_TEST_ID] else "速测版" if test is TESTS[TEST_ID] else "朋友局"
+        version = {FULL_TEST_ID: "完整版 · ", TEST_ID: "速测版 · "}.get(test_id, "")
         return f'''<section class="topic-box topic-board distribution" aria-labelledby="distribution-title">
-<h2 id="distribution-title">结果分布</h2><p>{version} · {total} 份结果 · 每个浏览器取最近一次。{note}</p>
+<h2 id="distribution-title">结果分布</h2><p>{version}{total} 份结果 · 每个浏览器取最近一次。{note}</p>
 <ol>{''.join(items)}</ol></section>'''
 
-    def result_image(self, test, result, icon=False):
-        style = "role-art result-role" if test is TESTS[FRIEND_TEST_ID] else f"appliance-picture appliance-{result}"
+    def result_image(self, test_id, result, icon=False):
+        if test_id in BANKS:
+            if icon:
+                return f'<span class="rank-icon bank-symbol art-{test_id}" aria-hidden="true">{BANK_SYMBOLS[test_id][result]}</span>'
+            style = f"bank-art art-{test_id}"
+        else:
+            style = "role-art result-role" if test_id == FRIEND_TEST_ID else f"appliance-picture appliance-{result}"
         kind = "rank-icon" if icon else "result-image"
         return f'<span class="{kind} {style}" aria-hidden="true"></span>'
 
@@ -469,23 +546,21 @@ class Handler(BaseHTTPRequestHandler):
     def share_page(self, slug):
         friend_roles = {"friend-spark": 0, "friend-anchor": 1, "friend-guide": 2, "friend-wildcard": 3}
         if slug in friend_roles:
-            test, result = TESTS[FRIEND_TEST_ID], friend_roles[slug]
+            test_id, result = FRIEND_TEST_ID, friend_roles[slug]
         else:
             with closing(connect()) as db:
                 row = db.execute("""SELECT COALESCE(a.chosen_test, c.test_id) AS test_id, a.result_index
                     FROM result_shares s JOIN attempts a ON a.token = s.attempt_token JOIN codes c ON c.code = a.code
                     WHERE s.slug = ? AND a.completed_at IS NOT NULL""", (slug,)).fetchone()
-            test = TESTS.get(row["test_id"]) if row else None
-            if not test:
+            if not row or row["test_id"] not in TESTS:
                 return self.page("找不到这个分享结果", '<p><a href="/">返回首页</a></p>', HTTPStatus.NOT_FOUND)
+            test_id = row["test_id"]
             result = row["result_index"]
-        title, description = test.results[result]
-        friend = test is TESTS[FRIEND_TEST_ID]
-        heading = f"我是{title}" if friend else f"我像一台{title}"
-        topic = "/friend-role.html" if friend else "/code/topic"
+        _, description = TESTS[test_id].results[result]
+        heading = result_heading(test_id, result, shared=True)
         action = '<button class="primary" type="button" id="copy-share">复制分享链接</button><span id="share-status" role="status"></span>'
-        card = self.result_card(test, result, description, action, topic)
-        image = "/homepage-plush-concept.png" if friend else "/appliance-results.jpg"
+        card = self.result_card(test_id, result, action)
+        image = "/question-bank-art.jpg" if test_id in BANKS else "/homepage-plush-concept.png" if test_id == FRIEND_TEST_ID else "/appliance-results.jpg"
         self.page(heading, card, preview=(description, image))
 
 
