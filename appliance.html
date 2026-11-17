@@ -22,18 +22,21 @@
         <p class="topic-meta">趣味性格 · 3 题速测 / 12 题完整版</p>
         <h1 id="topic-title">你的灵魂是哪种家电</h1>
         <p>你是给大家带来暖意的烤面包机，还是让场面透透气的小风扇？从日常小事里选出你最自然的反应。</p>
-        <a class="primary" href="/code">输入测试码开始</a>
+        <div class="topic-actions">
+          <form method="post" action="/code/start"><input type="hidden" name="selected_test" value="appliance-full-v1"><button class="primary">开始完整版 · 12 题</button></form>
+          <form method="post" action="/code/start"><input type="hidden" name="selected_test" value="appliance-v1"><button class="back">先玩 3 题速测</button></form>
+        </div>
       </div>
       <div class="art topic-art silly-art" aria-hidden="true"></div>
     </section>
     <div class="topic-grid">
       <section class="topic-box" aria-labelledby="details">
         <h2 id="details">怎么玩</h2>
-        <p>完整版包括日常习惯、朋友相处和放松方式三组题，约 5 分钟。凭一次性通用码可任选其中一种，答完会给出你的家电类型和解读。</p>
+        <p>完整版包括日常习惯、朋友相处和放松方式三组题，约 5 分钟。两个版本都可以直接免费开始，答完会给出你的家电类型和解读。</p>
       </section>
       <aside class="topic-box topic-board" aria-labelledby="board">
         <h2 id="board">测试排行榜</h2>
-        <p>答完后可以查看这项测试最近的公开结果。愿意上榜的话，开始前勾选公开昵称和结果。</p>
+        <p>结果按类型汇总，答完还能看到有多少人和你测出一样的结果。</p>
       </aside>
     </div>
   </main>

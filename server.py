@@ -1,29 +1,21 @@
 """Local preview of the test-code workflow. Run with python3 server.py."""
-import hashlib
-import hmac
 import os
 import re
 import secrets
 import sqlite3
-import sys
 import time
-import unicodedata
-from collections import Counter, deque
+from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
-from getpass import getpass
 from html import escape
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore
 from urllib.parse import parse_qs, urlsplit
-from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
-VALIDITY = 30 * 24 * 60 * 60
 ATTEMPT_DURATION = 2 * 60 * 60
 TEST_NAME = "你的灵魂是哪种家电"
 TEST_ID = "appliance-v1"
@@ -69,7 +61,6 @@ FULL_RESULTS = (
     ("洗衣机", "你擅长把乱成一团的事情理出顺序。朋友在纠结下一步时，你往往已经想好了一个可以试的办法。做完一件事，也记得歇一会儿。"),
 )
 FRIEND_TEST_ID = "friend-role-v1"
-SITE_CODE = "site-once"
 FRIEND_QUESTIONS = (
     ('群里有人说「周末出来玩」，你更可能？', ('先抛一个有意思的话题，把大家喊出来', '问问最近很忙的朋友有没有空', '发个投票，把时间地点确定下来', '提议大家带一件家里最离谱的东西')),
     ('聚会刚开始，大家有点拘谨。你会？', ('讲个好笑的近况，让大家接着聊', '找一个落单的朋友聊几句', '拿出准备好的小游戏', '顺手给桌上的零食起一堆奇怪名字')),
@@ -94,7 +85,7 @@ ASSETS = {
     "/homepage-plush-concept.png": "image/png",
     "/appliance-results.jpg": "image/jpeg",
     "/share.js": "text/javascript; charset=utf-8",
-    **dict.fromkeys(("/friend-role.html", "/observation.html", "/chat-match.html"), "text/html; charset=utf-8"),
+    **dict.fromkeys(("/observation.html", "/chat-match.html"), "text/html; charset=utf-8"),
 }
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS codes (
@@ -124,18 +115,6 @@ CREATE TABLE IF NOT EXISTS attempts (
     participant_id INTEGER REFERENCES participants(id)
 );
 CREATE INDEX IF NOT EXISTS attempts_by_code ON attempts(code, completed_at);
-CREATE TABLE IF NOT EXISTS code_batches (
-    id TEXT PRIMARY KEY,
-    label TEXT NOT NULL,
-    public_claim INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS one_use_codes (
-    code TEXT PRIMARY KEY REFERENCES codes(code),
-    batch_id TEXT NOT NULL REFERENCES code_batches(id),
-    claimed_by TEXT,
-    used_at INTEGER,
-    UNIQUE(batch_id, claimed_by)
-);
 CREATE TABLE IF NOT EXISTS result_shares (
     slug TEXT PRIMARY KEY,
     attempt_token TEXT NOT NULL UNIQUE REFERENCES attempts(token)
@@ -159,61 +138,6 @@ def initialize_db(db):
         db.execute("ALTER TABLE attempts ADD COLUMN chosen_test TEXT")
     db.execute("CREATE INDEX IF NOT EXISTS attempts_by_participant ON attempts(participant_id, completed_at)")
     db.execute("CREATE INDEX IF NOT EXISTS attempts_by_test ON attempts(chosen_test, completed_at)")
-
-
-def timestamp(value):
-    if value is None:
-        return "—"
-    return datetime.fromtimestamp(value, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
-
-
-def active_error(row, now):
-    if row is None:
-        return HTTPStatus.NOT_FOUND, "没有找到这个测试码。"
-    if row["revoked_at"] is not None:
-        return HTTPStatus.FORBIDDEN, "这个测试码已停用。"
-    if row["expires_at"] is not None and row["expires_at"] <= now:
-        return HTTPStatus.GONE, "这个测试码已到期。"
-    return None
-
-
-def issue_code():
-    value = secrets.token_hex(10).upper()
-    return "-".join(value[i:i + 5] for i in range(0, len(value), 5))
-
-
-def normalize_code(value):
-    normalized = re.sub(r"[\s-]+", "", value).upper()
-    if not re.fullmatch(r"[0-9A-F]{20}", normalized):
-        return ""
-    return "-".join(normalized[i:i + 5] for i in range(0, 20, 5))
-
-
-def normalize_nickname(value):
-    return " ".join(unicodedata.normalize("NFKC", value).split())
-
-
-def leaderboard(db, code):
-    return db.execute("""
-        SELECT p.id, p.nickname, count(*) AS finishes,
-            (SELECT latest.result_index FROM attempts latest
-             WHERE latest.participant_id = p.id AND latest.completed_at IS NOT NULL
-             ORDER BY latest.completed_at DESC, latest.rowid DESC LIMIT 1) AS result_index
-        FROM participants p JOIN attempts a ON a.participant_id = p.id
-        WHERE p.code = ? AND p.show_on_board = 1 AND a.completed_at IS NOT NULL
-        GROUP BY p.id
-        ORDER BY finishes DESC, p.id ASC LIMIT 25
-    """, (code,)).fetchall()
-
-
-def test_leaderboard(db, test_id):
-    return db.execute("""
-        SELECT p.id, p.nickname, a.result_index,
-               ROW_NUMBER() OVER (ORDER BY a.completed_at, a.rowid) AS position
-        FROM attempts a JOIN participants p ON p.id = a.participant_id
-        WHERE a.chosen_test = ? AND a.completed_at IS NOT NULL AND p.show_on_board = 1
-        ORDER BY a.completed_at DESC, a.rowid DESC LIMIT 25
-    """, (test_id,)).fetchall()
 
 
 def result_distribution(db, test_id):
@@ -296,29 +220,12 @@ class Handler(BaseHTTPRequestHandler):
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)} · 开心测试局</title><link rel="stylesheet" href="/style.css">{meta}</head>
 <body><header class="wrap nav"><a href="/" class="brand"><span class="art logo" aria-hidden="true"></span>开心测试局</a>
-<nav aria-label="主导航"><a href="/#discover">更多测试</a><a href="/admin">发码后台</a></nav></header>
+<nav aria-label="主导航"><a href="/#discover">更多测试</a></nav></header>
 <main class="wrap {layout}"><h1>{escape(title)}</h1>{content}</main></body></html>"""
         self.respond(markup.encode(), status, headers=headers)
 
     def redirect(self, location, headers=()):
         self.respond(b"", HTTPStatus.SEE_OTHER, headers=(("Location", location), *headers))
-
-    def admin_session(self):
-        cookies = SimpleCookie()
-        try:
-            cookies.load(self.headers.get("Cookie", ""))
-            token = cookies["quiz_admin"].value
-            expiry, nonce, signature = token.split(".")
-            expected = hmac.digest(self.server.signing_key, f"{expiry}.{nonce}".encode(), "sha256").hex()
-            return int(expiry) > time.time() and hmac.compare_digest(expected, signature)
-        except (KeyError, ValueError):
-            return False
-
-    def login_cookie(self):
-        expiry = int(time.time()) + 4 * 60 * 60
-        payload = f"{expiry}.{secrets.token_hex(16)}"
-        signature = hmac.digest(self.server.signing_key, payload.encode(), "sha256").hex()
-        return self.cookie("quiz_admin", f"{payload}.{signature}", "/admin", 14400)
 
     def cookie(self, name, value, path, age):
         secure = "; Secure" if self.server.cloud else ""
@@ -336,37 +243,48 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         path = url.path
         if path == "/":
-            html = (ROOT / "index.html").read_text().replace(
-                '<a href="#discover">发现测试</a>',
-                '<a href="#discover">发现测试</a><a href="/code">输入测试码</a>',
-            ).replace(
-                'href="appliance.html"', 'href="/code/topic"',
+            home = (ROOT / "index.html").read_text().replace(
+                '<button type="button" id="history">我的记录</button>',
+                '<a href="/code/history">我的记录</a>',
+            )
+            self.respond(home.encode())
+        elif path == "/friend-role.html":
+            html = (ROOT / "friend-role.html").read_text().replace(
+                '<button class="primary" type="button" id="start">开始免费测试</button>',
+                self.start_button(FRIEND_TEST_ID, "开始免费测试"),
             )
             self.respond(html.encode())
         elif path == "/appliance.html":
             self.redirect("/code/topic")
         elif path == "/code/topic":
             self.appliance_topic()
+        elif path == "/code/history":
+            self.history_page()
         elif path in ASSETS:
             self.respond((ROOT / path[1:]).read_bytes(), content_type=ASSETS[path])
-        elif path == "/admin":
-            if self.server.password_hash is None:
-                self.page("后台暂未开放", "<p>管理员需要先配置登录密码。</p>", HTTPStatus.SERVICE_UNAVAILABLE)
-            elif self.admin_session():
-                self.admin_page()
-            else:
-                self.login_page()
-        elif path == "/code":
-            selected = parse_qs(url.query).get("test", [FULL_TEST_ID])[0]
-            self.code_page(selected=selected)
-        elif path.startswith("/code/claim/"):
-            self.claim_page(path.removeprefix("/code/claim/"))
+        elif path in {"/admin", "/code"} or path.startswith("/code/claim/"):
+            self.redirect("/#discover")
         elif path.startswith("/share/"):
             self.share_page(path.removeprefix("/share/"))
         elif path == "/healthz":
             self.respond(b"ok\n", content_type="text/plain; charset=utf-8")
         else:
             self.page("找不到页面", '<p><a href="/">返回首页</a></p>', HTTPStatus.NOT_FOUND)
+
+    def history_page(self):
+        with closing(connect()) as db:
+            rows = db.execute("""SELECT COALESCE(a.chosen_test, c.test_id) AS test_id, a.result_index
+                FROM attempts a JOIN codes c ON c.code = a.code JOIN participants p ON p.id = a.participant_id
+                WHERE p.browser_token = ? AND a.completed_at IS NOT NULL
+                ORDER BY a.completed_at DESC, a.rowid DESC LIMIT 20""", (self.visitor_token(),)).fetchall()
+        items = []
+        for row in rows:
+            test = TESTS.get(row["test_id"])
+            if test is not None:
+                title = test.results[row["result_index"]][0]
+                items.append(f'<li class="topic-box"><strong>{escape(title)}</strong><p>{escape(test.title)}</p></li>')
+        listing = f'<ul class="code-list">{"".join(items)}</ul>' if items else '<p>完成测试后，这里会显示当前浏览器的结果。</p>'
+        self.page("我的测试记录", f'{listing}<p><a class="primary" href="/#discover">看看更多测试</a></p>')
 
     def appliance_topic(self):
         html = (ROOT / "appliance.html").read_text().replace("<head>", '<head><base href="/">', 1)
@@ -395,8 +313,6 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and origin not in {f"http://{self.headers.get('Host')}", f"https://{self.headers.get('Host')}"}:
             return self.page("请在本站提交表单", "", HTTPStatus.FORBIDDEN)
-        if path.startswith("/admin/") and path != "/admin/login" and not self.admin_session():
-            return self.login_page("请先登录后台。", HTTPStatus.UNAUTHORIZED)
         length = self.headers.get("Content-Length", "")
         if not length.isdecimal() or len(length) > 4 or int(length) > 4096:
             return self.page("请求内容过长或不可读", "", HTTPStatus.BAD_REQUEST)
@@ -410,199 +326,38 @@ class Handler(BaseHTTPRequestHandler):
         def field(name):
             return form.get(name, [""])[0]
 
-        if path == "/admin/login":
-            self.login(field("password"))
-        elif path == "/admin/logout":
-            self.redirect("/admin", (self.cookie("quiz_admin", "", "/admin", 0),))
-        elif path == "/admin/codes":
-            self.create_batch(field("label").strip(), field("quantity"), field("public_claim") == "yes")
-        elif path == "/admin/revoke":
-            with closing(connect()) as db, db:
-                db.execute("UPDATE codes SET revoked_at = ? WHERE code = ? AND revoked_at IS NULL", (int(time.time()), field("code")))
-            self.redirect("/admin")
-        elif path == "/code/start":
-            self.start_test(normalize_code(field("code")), normalize_nickname(field("nickname")),
-                            field("rank") == "yes", field("selected_test"))
+        if path == "/code/start":
+            self.start_test(field("selected_test"))
         elif path == "/code/submit":
             self.complete_test(field("attempt"), form)
         elif path == "/code/share":
             self.create_share(field("attempt"))
-        elif path.startswith("/code/claim/"):
-            self.claim_code(path.removeprefix("/code/claim/"))
         else:
-            self.page("找不到页面", "", HTTPStatus.NOT_FOUND)
+            self.page("找不到页面", '<p><a href="/#discover">浏览免费测试</a></p>', HTTPStatus.NOT_FOUND)
 
-    def login_page(self, message="", status=HTTPStatus.OK):
-        self.page("管理员登录", f"""<p role="status">{escape(message)}</p>
-<form method="post" action="/admin/login" class="sheet">
-<label>管理员密码 <input type="password" name="password" autocomplete="current-password" required></label>
-<button class="primary">登录</button></form>""", status)
+    def start_button(self, test_id, label):
+        return f'''<form method="post" action="/code/start" class="start-form">
+<input type="hidden" name="selected_test" value="{test_id}"><button class="primary">{escape(label)}</button></form>'''
 
-    def login(self, password):
-        if self.server.password_hash is None:
-            return self.page("后台暂未开放", "<p>管理员需要先配置登录密码。</p>", HTTPStatus.SERVICE_UNAVAILABLE)
-        now = time.monotonic()
-        with self.server.login_lock:
-            failures = self.server.login_failures
-            while failures and failures[0] <= now - 60:
-                failures.popleft()
-            if len(failures) >= 8:
-                return self.login_page("登录尝试过多，请一分钟后再试。", HTTPStatus.TOO_MANY_REQUESTS)
-            if not hmac.compare_digest(hashlib.sha256(password.encode()).digest(), self.server.password_hash):
-                failures.append(now)
-                return self.login_page("管理员密码不正确。", HTTPStatus.UNAUTHORIZED)
-        self.redirect("/admin", (self.login_cookie(),))
-
-    def create_batch(self, label, quantity, public_claim):
-        count = int(quantity) if re.fullmatch(r"[0-9]{1,3}", quantity) else 0
-        if count != 1 and not 50 <= count <= 100:
-            return self.page("请选择生成 1 个或 50–100 个码", '<p><a href="/admin">返回发码后台</a></p>', HTTPStatus.BAD_REQUEST)
-        if len(label) > 80:
-            return self.page("备注最多 80 个字符", '<p><a href="/admin">返回发码后台</a></p>', HTTPStatus.BAD_REQUEST)
-        batch = secrets.token_urlsafe(16)
-        now = int(time.time())
-        codes = [issue_code() for _ in range(count)]
-        with closing(connect()) as db, db:
-            db.execute("INSERT INTO code_batches VALUES (?, ?, ?)", (batch, label, public_claim))
-            db.executemany("INSERT INTO codes (code, test_id, label, created_at) VALUES (?, ?, ?, ?)",
-                           ((code, SITE_CODE, label, now) for code in codes))
-            db.executemany("INSERT INTO one_use_codes (code, batch_id) VALUES (?, ?)", ((code, batch) for code in codes))
-        self.redirect("/admin")
-
-    def claim_page(self, batch):
-        visitor = self.visitor_token()
-        with closing(connect()) as db:
-            exists = db.execute("SELECT 1 FROM code_batches WHERE id = ? AND public_claim = 1", (batch,)).fetchone()
-            if not exists:
-                return self.page("找不到领取页面", '<p><a href="/">返回首页</a></p>', HTTPStatus.NOT_FOUND)
-            claimed = db.execute("""SELECT c.*, u.used_at FROM one_use_codes u JOIN codes c ON c.code = u.code
-                WHERE u.batch_id = ? AND u.claimed_by = ?""",
-                                 (batch, visitor)).fetchone() if visitor else None
-        if claimed:
-            if claimed["used_at"] is not None:
-                return self.page("你已经用过本批测试码", '<p><a href="/#discover">浏览更多测试</a></p>')
-            error = active_error(claimed, int(time.time()))
-            if error:
-                return self.page(error[1], '<p><a href="/#discover">浏览更多测试</a></p>', error[0])
-            return self.code_page("这是你领取的全站通用码，选一个测试开始。", code=claimed["code"])
-        cookie = self.cookie("quiz_visitor", visitor or secrets.token_urlsafe(32), "/code", 7776000)
-        self.page("领取一次性测试码", f"""<section class="sheet"><p>每个浏览器在本批可以领取一个码，任选一个已上线的测试，交卷后即用完。</p>
-<form method="post" action="/code/claim/{escape(batch)}"><button class="primary">领取测试码</button></form></section>""", headers=(cookie,))
-
-    def claim_code(self, batch):
-        visitor = self.visitor_token() or secrets.token_urlsafe(32)
-        with closing(connect()) as db, db:
-            db.execute("BEGIN IMMEDIATE")
-            if not db.execute("SELECT 1 FROM code_batches WHERE id = ? AND public_claim = 1", (batch,)).fetchone():
-                return self.page("找不到领取页面", "", HTTPStatus.NOT_FOUND)
-            existing = db.execute("SELECT 1 FROM one_use_codes WHERE batch_id = ? AND claimed_by = ?", (batch, visitor)).fetchone()
-            if not existing:
-                available = db.execute("""SELECT u.code FROM one_use_codes u JOIN codes c ON u.code = c.code
-                    WHERE u.batch_id = ? AND u.claimed_by IS NULL AND u.used_at IS NULL AND c.revoked_at IS NULL
-                      AND (c.expires_at IS NULL OR c.expires_at > ?) ORDER BY u.rowid LIMIT 1""", (batch, int(time.time()))).fetchone()
-                if not available:
-                    return self.page("本批测试码已领完", '<p><a href="/#discover">看看其他测试</a></p>', HTTPStatus.GONE)
-                db.execute("UPDATE one_use_codes SET claimed_by = ? WHERE code = ?", (visitor, available["code"]))
-        self.redirect(f"/code/claim/{batch}", (self.cookie("quiz_visitor", visitor, "/code", 7776000),))
-
-    def admin_page(self):
-        with closing(connect()) as db:
-            rows = db.execute("""
-                SELECT c.*, u.claimed_by, u.used_at, (SELECT count(*) FROM attempts a
-                    WHERE a.code = c.code AND a.completed_at IS NOT NULL) AS completions
-                FROM codes c LEFT JOIN one_use_codes u ON u.code = c.code ORDER BY c.rowid DESC LIMIT 200
-            """).fetchall()
-            batches = db.execute("""SELECT b.*, count(*) AS total, count(u.claimed_by) AS claimed, count(u.used_at) AS used
-                FROM code_batches b JOIN one_use_codes u ON u.batch_id = b.id
-                GROUP BY b.id ORDER BY b.rowid DESC LIMIT 30""").fetchall()
-        now = int(time.time())
-        items = []
-        for row in rows:
-            code = escape(row["code"])
-            status = ("已用完" if row["used_at"] is not None else
-                      "已停用" if row["revoked_at"] is not None else
-                      "已领取" if row["expires_at"] is None and row["claimed_by"] else
-                      "未激活" if row["expires_at"] is None else
-                      "已过期" if row["expires_at"] <= now else "可使用")
-            action = ""
-            if status in {"未激活", "已领取", "可使用"}:
-                action = f"""<form method="post" action="/admin/revoke">
-<input type="hidden" name="code" value="{code}"><button class="back">停用</button></form>"""
-            deadline = timestamp(row["expires_at"]) if row["expires_at"] is not None else "首次使用后开始计时"
-            test = TESTS.get(row["test_id"])
-            title = "全站通用 · 仅可使用一次" if row["test_id"] == SITE_CODE else test.title if test else "未知测试版本"
-            note = f'<p>备注 · {escape(row["label"])}</p>' if row["label"] else ""
-            items.append(f"""<li class="sheet"><strong><code>{code}</code></strong>
-<p>{escape(title)} · {status}</p>{note}
-<p>到期时间 {deadline} · 完成 {row["completions"]} 次</p>{action}</li>""")
-        entries = "".join(items) or "<li>还没有生成测试码。</li>"
-        summaries = []
-        for batch in batches:
-            link = f'<a class="text-link" href="/code/claim/{batch["id"]}">打开领取页并复制链接</a>' if batch["public_claim"] else ""
-            summaries.append(f'<li class="sheet"><strong>{escape(batch["label"] or "全站测试码")}</strong><p>共 {batch["total"]} 个 · 已领 {batch["claimed"]} · 已用 {batch["used"]}</p>{link}</li>')
-        self.page("测试码管理", f"""<form method="post" action="/admin/codes" class="sheet">
-<p>新码适用于任意已上线的测试，成功交卷一次后即失效。</p>
-<label>生成数量 <input name="quantity" type="number" inputmode="numeric" min="1" max="100" value="50" required></label>
-<p class="form-hint">每批 50–100 个，也可单独生成 1 个。</p>
-<label>发放备注 <input type="text" name="label" maxlength="80" placeholder="例如 周五朋友局"></label>
-<label class="rank-choice"><input type="checkbox" name="public_claim" value="yes" checked>生成访客自助领取链接</label>
-<button class="primary">生成测试码</button></form>
-<h2>最近生成的批次</h2><ul class="code-list">{''.join(summaries) or '<li>还没有生成批次。</li>'}</ul>
-<h2>最近 200 个测试码</h2><ul class="code-list">{entries}</ul>
-<form method="post" action="/admin/logout"><button class="back">退出后台</button></form>""")
-
-    def code_page(self, message="", status=HTTPStatus.OK, code="", nickname="", ranked=False, selected=FULL_TEST_ID):
-        checked = " checked" if ranked else ""
-        options = "".join(f'<option value="{key}"{" selected" if key == selected else ""}>{escape(test.title)}</option>'
-                          for key, test in TESTS.items())
-        self.page("输入测试码", f"""<p role="status">{escape(message)}</p>
-<form method="post" action="/code/start" class="sheet">
-<label>测试码 <input name="code" value="{escape(code)}" autocomplete="off" spellcheck="false" required maxlength="40"></label>
-<label>选择测试 <select name="selected_test">{options}</select></label>
-<p class="form-hint">全站通用码按这里的选择开始。早先发放的专用码会打开它绑定的测试。</p>
-<label>昵称 <input name="nickname" value="{escape(nickname)}" autocomplete="nickname" required maxlength="20"></label>
-<p class="form-hint">1–20 个字符。同一浏览器重测时，请继续使用原昵称。</p>
-<label class="rank-choice"><input type="checkbox" name="rank" value="yes"{checked}>
-在排行榜显示我的昵称和结果</label>
-<button class="primary">解锁并开始</button></form>""", status)
-
-    def start_test(self, code, nickname, ranked, selected):
-        if not 1 <= len(nickname) <= 20 or any(unicodedata.category(char) == "Cc" for char in nickname):
-            return self.code_page("请输入 1–20 个字符的昵称。", HTTPStatus.BAD_REQUEST, code, nickname, ranked)
+    def start_test(self, test_id):
+        test = TESTS.get(test_id)
+        if test is None:
+            return self.page("请选择测试", '<p><a href="/#discover">浏览免费测试</a></p>', HTTPStatus.BAD_REQUEST)
         now = int(time.time())
         attempt = secrets.token_urlsafe(32)
         visitor = self.visitor_token() or secrets.token_urlsafe(32)
-        nickname_key = nickname.casefold()
+        # A fixed storage key keeps historical records and foreign-key links intact.
+        storage_key = f"free:{test_id}"
         with closing(connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT c.*, u.claimed_by, u.used_at FROM codes c LEFT JOIN one_use_codes u ON u.code = c.code WHERE c.code = ?", (code,)).fetchone()
-            error = active_error(row, now)
-            if error:
-                return self.code_page(error[1], error[0], code, nickname, ranked)
-            site = row["test_id"] == SITE_CODE
-            if site and row["used_at"] is not None:
-                return self.code_page("这个测试码已经使用过了。", HTTPStatus.GONE, nickname=nickname, selected=selected)
-            if site and row["claimed_by"] and row["claimed_by"] != visitor:
-                return self.code_page("这个码已在其他浏览器领取。", HTTPStatus.FORBIDDEN, nickname=nickname, selected=selected)
-            test = TESTS.get(selected if site else row["test_id"])
-            if test is None:
-                return self.code_page("这个测试版本目前不可用。", HTTPStatus.GONE, code, nickname, ranked)
-            owner = db.execute("SELECT * FROM participants WHERE code = ? AND browser_token = ?", (code, visitor)).fetchone()
-            if owner and owner["nickname_key"] != nickname_key:
-                return self.code_page(f"请继续使用原昵称「{owner['nickname']}」。", HTTPStatus.CONFLICT, code, nickname, ranked)
-            if owner:
-                participant = owner["id"]
-                db.execute("UPDATE participants SET show_on_board = ? WHERE id = ?", (ranked, participant))
-            else:
-                existing = db.execute("SELECT 1 FROM participants WHERE code = ? AND nickname_key = ?", (code, nickname_key)).fetchone()
-                if existing:
-                    return self.code_page("这个昵称已被使用，请换一个。", HTTPStatus.CONFLICT, code, nickname, ranked)
-                participant = db.execute("""INSERT INTO participants (code, nickname, nickname_key, browser_token, show_on_board)
-                    VALUES (?, ?, ?, ?, ?)""", (code, nickname, nickname_key, visitor, ranked)).lastrowid
-            if row["expires_at"] is None:
-                db.execute("UPDATE codes SET expires_at = ? WHERE code = ?", (now + VALIDITY, code))
-            db.execute("INSERT INTO attempts (token, code, started_at, participant_id, chosen_test) VALUES (?, ?, ?, ?, ?)",
-                       (attempt, code, now, participant, selected if site else None))
+            db.execute("INSERT OR IGNORE INTO codes (code, test_id, label, created_at) VALUES (?, ?, ?, ?)",
+                       (storage_key, test_id, "", now))
+            db.execute("""INSERT OR IGNORE INTO participants (code, nickname, nickname_key, browser_token, show_on_board)
+                VALUES (?, ?, ?, ?, 0)""", (storage_key, "", visitor, visitor))
+            participant = db.execute("SELECT id FROM participants WHERE code = ? AND browser_token = ?",
+                                     (storage_key, visitor)).fetchone()["id"]
+            db.execute("INSERT INTO attempts (token, code, started_at, participant_id) VALUES (?, ?, ?, ?)",
+                       (attempt, storage_key, now, participant))
         cookie = self.cookie("quiz_visitor", visitor, "/code", 7776000)
         self.test_page(attempt, cookie, test)
 
@@ -626,63 +381,39 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         with closing(connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("""SELECT a.*, COALESCE(a.chosen_test, c.test_id) AS test_id, c.expires_at, c.revoked_at,
-                p.browser_token, p.show_on_board, u.claimed_by, u.used_at FROM attempts a
+            row = db.execute("""SELECT a.*, COALESCE(a.chosen_test, c.test_id) AS test_id, p.browser_token FROM attempts a
                 JOIN codes c ON a.code = c.code LEFT JOIN participants p ON p.id = a.participant_id
-                LEFT JOIN one_use_codes u ON u.code = a.code
-                WHERE a.token = ?""", (token,)).fetchone()
-            error = active_error(row, now)
-            if error is None:
-                test = TESTS.get(row["test_id"])
-                if test is None:
-                    error = HTTPStatus.GONE, "这个测试版本目前不可用。"
-                elif row["participant_id"] is not None and row["browser_token"] != self.visitor_token():
-                    error = HTTPStatus.FORBIDDEN, "请回到开始测试的浏览器，或重新输入测试码。"
-                elif row["completed_at"] is not None:
-                    result = row["result_index"]
-                elif row["used_at"] is not None:
-                    error = HTTPStatus.GONE, "这个测试码已经使用过了。"
-                elif row["claimed_by"] and row["claimed_by"] != self.visitor_token():
-                    error = HTTPStatus.FORBIDDEN, "这个码已在其他浏览器领取。"
-                elif now - row["started_at"] >= ATTEMPT_DURATION:
-                    error = HTTPStatus.GONE, "这次答题已超时，请重新输入测试码。"
-                else:
-                    answers = [form.get(f"q{index}", []) for index in range(len(test.questions))]
-                    valid = all(len(picks) == 1 and picks[0] in {str(value) for value in range(len(options))}
-                                for picks, (_, options) in zip(answers, test.questions))
-                    if valid:
-                        # In a tie, prefer the response to the latest question among the tied types.
-                        ordered = reversed(answers) if row["test_id"] == FULL_TEST_ID else answers
-                        result = Counter(int(picks[0]) for picks in ordered).most_common(1)[0][0]
-                        db.execute("UPDATE attempts SET completed_at = ?, result_index = ? WHERE token = ?",
-                                   (time.time_ns(), result, token))
-                        if row["chosen_test"]:
-                            db.execute("UPDATE one_use_codes SET used_at = ? WHERE code = ?", (now, row["code"]))
-                    else:
-                        error = HTTPStatus.BAD_REQUEST, "请完成所有题目后再提交。"
-            site = row is not None and row["chosen_test"] is not None
-            entries = []
-            if error is None:
-                entries = test_leaderboard(db, row["test_id"]) if site else leaderboard(db, row["code"])
-                distribution = result_distribution(db, row["test_id"])
-        if error:
-            return self.code_page(error[1], error[0])
-        title, description = test.results[result]
-        board = self.render_board(entries, row, test, site=site)
-        graph = self.render_distribution(test, distribution, result)
+                WHERE a.token = ? AND p.browser_token = ?""", (token, self.visitor_token())).fetchone()
+            test = TESTS.get(row["test_id"]) if row else None
+            if not test:
+                return self.page("找不到答题记录", '<p><a href="/#discover">重新开始免费测试</a></p>', HTTPStatus.NOT_FOUND)
+            result = row["result_index"]
+            if row["completed_at"] is None:
+                if not row["code"].startswith("free:") or now - row["started_at"] >= ATTEMPT_DURATION:
+                    return self.page("请重新开始测试", '<p><a href="/#discover">重新开始免费测试</a></p>', HTTPStatus.GONE)
+                answers = [form.get(f"q{index}", []) for index in range(len(test.questions))]
+                valid = all(len(picks) == 1 and picks[0] in {str(value) for value in range(len(options))}
+                            for picks, (_, options) in zip(answers, test.questions))
+                if not valid:
+                    return self.page("请完成所有题目后再提交", '<p>返回上一页即可继续答题。</p>', HTTPStatus.BAD_REQUEST)
+                ordered = reversed(answers) if row["test_id"] == FULL_TEST_ID else answers
+                result = Counter(int(picks[0]) for picks in ordered).most_common(1)[0][0]
+                db.execute("UPDATE attempts SET completed_at = ?, result_index = ? WHERE token = ?",
+                           (time.time_ns(), result, token))
+            distribution = result_distribution(db, row["test_id"])
+        _, description = test.results[result]
+        title = test.results[result][0]
         heading = f"你是{title}" if test is TESTS[FRIEND_TEST_ID] else f"你像一台{title}"
         topic = "/friend-role.html" if test is TESTS[FRIEND_TEST_ID] else "/code/topic"
-        share = f'<form method="post" action="/code/share"><input type="hidden" name="attempt" value="{escape(token)}"><button class="primary">生成分享页</button></form>' if row["participant_id"] else ""
-        notice = "这次测试已完成，一次性测试码已用完。" if site else ""
-        card = self.result_card(test, result, description, share, topic, notice, self.rarity(distribution, result))
-        participants = f'<details class="participant-details"><summary>查看参与者榜单</summary>{board}</details>'
-        self.page(heading, f'<div class="topic-grid result-grid">{card}<div>{graph}{participants}</div></div>', wide=True)
+        share = f'<form method="post" action="/code/share"><input type="hidden" name="attempt" value="{escape(token)}"><button class="primary">生成分享页</button></form>'
+        card = self.result_card(test, result, description, share, topic, self.rarity(distribution, result))
+        graph = self.render_distribution(test, distribution, result)
+        self.page(heading, f'<div class="topic-grid result-grid">{card}<div>{graph}</div></div>', wide=True)
 
-    def result_card(self, test, result, description, action, topic, notice="", rarity=""):
+    def result_card(self, test, result, description, action, topic, rarity=""):
         illustration = self.result_image(test, result)
-        note = f'<p class="result-note">{escape(notice)}</p>' if notice else ""
         return f"""<section class="result-card">{illustration}<div class="result-copy">
-<h2>{escape(test.title)}</h2>{rarity}<p class="result-description">{escape(description)}</p>{note}
+<h2>{escape(test.title)}</h2>{rarity}<p class="result-description">{escape(description)}</p>
 <div class="topic-actions">{action}<a class="text-link" href="{topic}">返回测试专题</a></div></div></section>"""
 
     def rarity(self, counts, result):
@@ -730,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
             row = db.execute("""SELECT 1 FROM attempts a JOIN participants p ON p.id = a.participant_id
                 WHERE a.token = ? AND a.completed_at IS NOT NULL AND p.browser_token = ?""", (token, self.visitor_token())).fetchone()
             if not row:
-                return self.page("找不到可分享的结果", '<p><a href="/code">输入测试码</a></p>', HTTPStatus.NOT_FOUND)
+                return self.page("找不到可分享的结果", '<p><a href="/#discover">浏览免费测试</a></p>', HTTPStatus.NOT_FOUND)
             db.execute("INSERT OR IGNORE INTO result_shares VALUES (?, ?)", (secrets.token_urlsafe(18), token))
             slug = db.execute("SELECT slug FROM result_shares WHERE attempt_token = ?", (token,)).fetchone()["slug"]
         self.redirect(f"/share/{slug}")
@@ -757,47 +488,10 @@ class Handler(BaseHTTPRequestHandler):
         image = "/homepage-plush-concept.png" if friend else "/appliance-results.jpg"
         self.page(heading, card, preview=(description, image))
 
-    def render_board(self, entries, participant, test, caption="", site=False):
-        listing = []
-        rank = 0
-        previous = None
-        for position, entry in enumerate(entries, 1):
-            if site:
-                rank = entry["position"]
-            elif entry["finishes"] != previous:
-                rank = position
-                previous = entry["finishes"]
-            name = escape(entry["nickname"])
-            if entry["id"] == participant["participant_id"]:
-                name += ' <small class="board-you">你</small>'
-            title = escape(test.results[entry["result_index"]][0])
-            icon = self.result_image(test, entry["result_index"], icon=True)
-            count = "" if site else f'<span>{entry["finishes"]} 次</span>'
-            listing.append(f'<li class="board-row"><span>{rank}</span><div class="board-profile">{icon}<div><strong>{name}</strong><small>{title}</small></div></div>{count}</li>')
-        detail = "<p>还没有人选择上榜。</p>"
-        if listing:
-            detail = f'<ol class="board-list">{"".join(listing)}</ol>'
-        private = "<p>你这次选择不在榜上展示。</p>" if participant["participant_id"] and not participant["show_on_board"] else ""
-        title = "测试排行榜" if site else "同码排行榜"
-        order = "展示最近 25 条公开结果，数字是上榜顺序。" if site else "按完成次数排列，次数相同并列，最多展示 25 人。"
-        return f"""<section class="topic-box topic-board" aria-labelledby="board-title"><h2 id="board-title">{title}</h2>
-<p>{escape(caption)}{order}</p>{private}{detail}</section>"""
 
 
 def main():
     cloud = os.environ.get("QUIZ_CLOUD") == "1"
-    password = os.environ.get("QUIZ_ADMIN_PASSWORD")
-    if cloud:
-        password_file = Path(os.environ.get("QUIZ_ADMIN_PASSWORD_FILE", "/run/secrets/quiz-admin/password"))
-        if password_file.is_file():
-            password = password_file.read_text().rstrip("\r\n")
-        if not password or len(password) < 20:
-            password = None
-    else:
-        if password is None and sys.stdin.isatty():
-            password = getpass("为本次预览设置管理员密码（至少 12 个字符）：")
-        if not password or len(password) < 12:
-            sys.exit("请设置至少 12 个字符的管理员密码。")
     db_path = Path(os.environ.get("QUIZ_DB", ROOT / ".quiz-data" / "quiz.sqlite3"))
     db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if cloud and os.getuid() == 0:
@@ -810,10 +504,6 @@ def main():
     address = "0.0.0.0" if cloud else "127.0.0.1"
     with QuizServer((address, int(os.environ.get("PORT", "8080"))), Handler) as server:
         server.cloud = cloud
-        server.signing_key = hmac.digest(password.encode(), b"happy-quiz/admin-session/v1", "sha256") if cloud and password else secrets.token_bytes(32)
-        server.password_hash = hashlib.sha256(password.encode()).digest() if password else None
-        server.login_lock = Lock()
-        server.login_failures = deque()
         print(f"Listening on {address}:{server.server_port}", flush=True)
         try:
             server.serve_forever()
