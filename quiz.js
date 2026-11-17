@@ -118,7 +118,14 @@ function finish() {
     paragraph("此浏览器暂时无法保存测试记录。");
   }
   const retry = button("再玩一次", start);
-  content.append(retry);
+  const share = document.createElement("a");
+  share.className = "text-link";
+  share.href = `/share/friend-${role}`;
+  share.textContent = "打开分享页";
+  const actions = document.createElement("div");
+  actions.className = "topic-actions";
+  actions.append(retry, share);
+  content.append(actions);
   retry.focus();
 }
 

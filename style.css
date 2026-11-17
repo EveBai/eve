@@ -144,3 +144,41 @@ dialog::backdrop { background: #30213e80; }
   .topic-hero, .topic-grid { grid-template-columns: 1fr; }
   .topic-art { margin: 0 16px 16px; }
 }
+
+.result-card {
+  overflow: hidden;
+  border: 1px solid #e7d9ed;
+  border-radius: 28px;
+  background: #fff;
+  box-shadow: 0 16px 42px #4f307117;
+}
+.result-image { display: block; width: 100%; aspect-ratio: 1; }
+.appliance-picture {
+  background-image: url("/appliance-results.jpg");
+  background-repeat: no-repeat;
+  background-size: 200% 200%;
+}
+.appliance-0 { background-position: left top; }
+.appliance-1 { background-position: right top; }
+.appliance-2 { background-position: left bottom; }
+.appliance-3 { background-position: right bottom; }
+.result-role {
+  background-image: url("/homepage-plush-concept.png");
+  background-repeat: no-repeat;
+  background-size: 325% auto;
+}
+.result-image.result-role { aspect-ratio: 2.7; }
+.result-copy { padding: clamp(20px, 4vw, 34px); }
+.result-copy h2 { color: #5a3a79; font-size: 1.1rem; margin: 0 0 10px; }
+.result-description { font-size: 1.12rem; line-height: 1.8; margin: 0; }
+.result-note { color: #665676; font-size: .9rem; }
+.result-copy a:not(.primary), dialog .text-link {
+  color: var(--purple); text-decoration: underline; text-underline-offset: 3px;
+}
+.board-profile { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.rank-icon {
+  display: inline-block; width: 42px; aspect-ratio: 1;
+  flex-shrink: 0; border-radius: 12px; background-color: #eae0f2;
+}
+.rank-icon.result-role { background-size: 620% auto; background-position: 7% 70%; }
+#share-status { color: #665676; font-size: .9rem; }
